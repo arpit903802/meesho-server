@@ -43,9 +43,6 @@ PRODUCT_IMAGES = [
     "https://picsum.photos/300/400?random=3",
     "https://picsum.photos/300/400?random=4",
     "https://picsum.photos/300/400?random=5",
-    "https://picsum.photos/300/400?random=6",
-    "https://picsum.photos/300/400?random=7",
-    "https://picsum.photos/300/400?random=8",
 ]
 
 def extract_price(value, fallback=0):
@@ -59,7 +56,7 @@ def extract_price(value, fallback=0):
         except:
             return fallback
     if isinstance(value, dict):
-        for key in ["value", "selling_price", "price", "mrp", "original_price", "min_price", "max_price"]:
+        for key in ["value", "selling_price", "price", "mrp", "original_price"]:
             if value.get(key):
                 return extract_price(value[key], fallback)
         return fallback
@@ -74,53 +71,28 @@ def search_products(query, page=1, limit=20):
         "app-session-id": str(uuid.uuid4()), "app-sdk-version": "34",
         "app-client-id": "android", "xo": ANON_XO,
         "meesho-user-context": "anonymous", "content-type": "application/json; charset=UTF-8",
-        "user-agent": f"Dalvik/2.1.0 (Linux; U; Android {dev['os_version']}; {dev['model']} Build/) Cronet/137.0.7100.61",
+        "user-agent": "Dalvik/2.1.0 (Linux; U; Android 12; moto g(60) Build/) Cronet",
         "app-gaid": str(uuid.uuid4()), "app-session-count": str(random.randint(1, 6)),
     }
-    body = {
-        "filter": {"type": "text_search", "query": query},
-        "offset": (page-1)*limit, "limit": limit
-    }
+    body = {"filter": {"type": "text_search", "query": query}, "offset": (page-1)*limit, "limit": limit}
     try:
         resp = requests.post(f"{MEESHO_API}/3.0/anonymous/catalogs", headers=headers, json=body, timeout=10)
         if resp.status_code == 200:
-            data = resp.json()
-            catalogs = data.get("catalogs", [])
+            catalogs = resp.json().get("catalogs", [])
             products = []
             for c in catalogs:
-                price = extract_price(c.get("price")) or extract_price(c.get("selling_price")) or extract_price(c.get("min_price"))
-                mrp = extract_price(c.get("mrp")) or extract_price(c.get("maximum_retail_price")) or extract_price(c.get("original_price"))
-                if price <= 0:
-                    price = random.randint(99, 999)
-                if mrp <= 0 or mrp < price:
-                    mrp = price * random.choice([2, 2.5, 3, 4])
-                rating = c.get("rating")
-                if isinstance(rating, dict):
-                    rating = rating.get("average") or rating.get("value") or 0
-                if not rating or rating <= 0:
-                    rating = random.choice([3.8, 3.9, 4.0, 4.1, 4.2, 4.3, 4.4, 4.5])
-                image = c.get("image") or c.get("image_url") or c.get("thumbnail")
-                if isinstance(image, list) and image:
-                    image = image[0]
-                if isinstance(image, dict):
-                    image = image.get("url", "")
-                if not image:
-                    image = random.choice(PRODUCT_IMAGES)
-                products.append({
-                    "id": str(c.get("id", "")),
-                    "name": c.get("name", "Product"),
-                    "price": int(price),
-                    "mrp": int(mrp),
-                    "rating": round(float(rating), 1),
-                    "image": str(image)
-                })
+                price = extract_price(c.get("price")) or extract_price(c.get("selling_price")) or random.randint(99, 999)
+                mrp = extract_price(c.get("mrp")) or extract_price(c.get("maximum_retail_price")) or price * 2
+                rating = c.get("rating") or random.choice([3.8, 4.0, 4.2, 4.5])
+                image = c.get("image") or c.get("image_url") or random.choice(PRODUCT_IMAGES)
+                products.append({"id": str(c.get("id", "")), "name": c.get("name", "Product"), "price": int(price), "mrp": int(mrp), "rating": round(float(rating), 1), "image": str(image)})
             return {"ok": True, "products": products, "page": page, "has_next": len(products) == limit}
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        logger.error(f"Search: {e}")
     fallback = []
     for i in range(limit):
         p = random.randint(99, 999)
-        fallback.append({"id": str(random.randint(1000,9999)), "name": f"{query} Product {i+1}", "price": p, "mrp": p*2, "rating": random.choice([3.8,4.0,4.2,4.5]), "image": random.choice(PRODUCT_IMAGES)})
+        fallback.append({"id": str(random.randint(1000,9999)), "name": f"{query} {i+1}", "price": p, "mrp": p*2, "rating": random.choice([3.8,4.0,4.2,4.5]), "image": random.choice(PRODUCT_IMAGES)})
     return {"ok": True, "products": fallback, "page": page, "has_next": False}
 
 class APIHandler(BaseHTTPRequestHandler):
@@ -133,23 +105,26 @@ class APIHandler(BaseHTTPRequestHandler):
             page = int(params.get('page', ['1'])[0])
             limit = min(int(params.get('limit', ['20'])[0]), 50)
             result = executor.submit(search_products, query, page, limit).result(timeout=15)
-            self._send_json(result)
+            self._json(result)
+        
+        elif parsed.path == '/api/offer':
+            dev = random.choice(DEVICES)
+            bucket = random.choice([75, 90, 100, 120, 135, 150])
+            self._json({"ok": True, "bucket": bucket, "device": dev["model"]})
         
         elif parsed.path == '/api/accounts':
             user_id = params.get('user_id', [''])[0]
-            accounts = load_user_accounts()
-            user_accounts = accounts.get(user_id, [])
-            self._send_json({"ok": True, "accounts": user_accounts})
+            self._json({"ok": True, "accounts": load_user_accounts().get(user_id, [])})
         
         elif parsed.path == '/health':
-            self._send_json({"status": "ok"})
+            self._json({"status": "ok"})
         
         else:
-            self._send_json({"ok": False}, 404)
+            self._json({"ok": False}, 404)
     
     def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(content_length) or b'{}')
+        length = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(length) or b'{}')
         parsed = urlparse(self.path)
         
         if parsed.path == '/api/login':
@@ -158,18 +133,10 @@ class APIHandler(BaseHTTPRequestHandler):
             accounts = load_user_accounts()
             if user_id not in accounts:
                 accounts[user_id] = []
-            exists = False
-            for acc in accounts[user_id]:
-                if acc['phone'] == phone:
-                    exists = True
-                    break
-            if not exists:
-                accounts[user_id].append({
-                    "phone": phone,
-                    "login_time": time.strftime("%Y-%m-%d %H:%M:%S")
-                })
+            if not any(a['phone'] == phone for a in accounts[user_id]):
+                accounts[user_id].append({"phone": phone, "login_time": time.strftime("%Y-%m-%d %H:%M:%S")})
             save_user_accounts(accounts)
-            self._send_json({"ok": True, "accounts": accounts[user_id]})
+            self._json({"ok": True, "accounts": accounts[user_id]})
         
         elif parsed.path == '/api/logout':
             user_id = body.get('user_id', '')
@@ -178,12 +145,12 @@ class APIHandler(BaseHTTPRequestHandler):
             if user_id in accounts:
                 accounts[user_id] = [a for a in accounts[user_id] if a['phone'] != phone]
                 save_user_accounts(accounts)
-            self._send_json({"ok": True, "accounts": accounts.get(user_id, [])})
+            self._json({"ok": True, "accounts": accounts.get(user_id, [])})
         
         else:
-            self._send_json({"ok": False}, 404)
+            self._json({"ok": False}, 404)
     
-    def _send_json(self, data, status=200):
+    def _json(self, data, status=200):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Access-Control-Allow-Origin', '*')
