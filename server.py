@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, uuid, random, requests, logging, os
+import json, uuid, random, requests, logging, os, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +14,19 @@ ANON_XO = "eyJ0eXBlIjoiY29tcG9zaXRlIn0=.eyJqd3QiOiJleUpoYkdjaU9pSklVekkxTmlJc0lt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=50)
+
+USER_ACCOUNTS_FILE = "user_accounts.json"
+
+def load_user_accounts():
+    try:
+        with open(USER_ACCOUNTS_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_user_accounts(accounts):
+    with open(USER_ACCOUNTS_FILE, 'w') as f:
+        json.dump(accounts, f)
 
 DEVICES = [
     {"brand": "motorola", "model": "moto g(60)", "os_version": "12"},
@@ -65,37 +78,27 @@ def search_products(query, page=1, limit=20):
         "app-gaid": str(uuid.uuid4()), "app-session-count": str(random.randint(1, 6)),
     }
     body = {
-        "filter": {"type": "text_search", "sort_option": None, "selected_filters": [],
-                   "current_row_filters": [], "session_state": None, "selectedFilterIds": [],
-                   "isClearFilterClicked": False, "query": query, "intent_payload": None,
-                   "is_voice_search": False},
-        "search_session_id": None, "cursor": None, "offset": (page-1)*limit,
-        "limit": limit, "supplier_id": None, "featured_collection_type": None,
-        "meta": {"recent_searches": [query]}, "retry_count": 0, "product_listing_page_id": None
+        "filter": {"type": "text_search", "query": query},
+        "offset": (page-1)*limit, "limit": limit
     }
-    
     try:
         resp = requests.post(f"{MEESHO_API}/3.0/anonymous/catalogs", headers=headers, json=body, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             catalogs = data.get("catalogs", [])
             products = []
-            
             for c in catalogs:
                 price = extract_price(c.get("price")) or extract_price(c.get("selling_price")) or extract_price(c.get("min_price"))
                 mrp = extract_price(c.get("mrp")) or extract_price(c.get("maximum_retail_price")) or extract_price(c.get("original_price"))
-                
                 if price <= 0:
                     price = random.randint(99, 999)
                 if mrp <= 0 or mrp < price:
                     mrp = price * random.choice([2, 2.5, 3, 4])
-                
                 rating = c.get("rating")
                 if isinstance(rating, dict):
                     rating = rating.get("average") or rating.get("value") or 0
                 if not rating or rating <= 0:
                     rating = random.choice([3.8, 3.9, 4.0, 4.1, 4.2, 4.3, 4.4, 4.5])
-                
                 image = c.get("image") or c.get("image_url") or c.get("thumbnail")
                 if isinstance(image, list) and image:
                     image = image[0]
@@ -103,7 +106,6 @@ def search_products(query, page=1, limit=20):
                     image = image.get("url", "")
                 if not image:
                     image = random.choice(PRODUCT_IMAGES)
-                
                 products.append({
                     "id": str(c.get("id", "")),
                     "name": c.get("name", "Product"),
@@ -112,23 +114,14 @@ def search_products(query, page=1, limit=20):
                     "rating": round(float(rating), 1),
                     "image": str(image)
                 })
-            
             return {"ok": True, "products": products, "page": page, "has_next": len(products) == limit}
     except Exception as e:
         logger.error(f"Search error: {e}")
-    
-    fallback_products = []
+    fallback = []
     for i in range(limit):
         p = random.randint(99, 999)
-        fallback_products.append({
-            "id": str(random.randint(1000, 9999)),
-            "name": f"{query} Product {i+1}",
-            "price": p,
-            "mrp": p * 2,
-            "rating": random.choice([3.8, 4.0, 4.2, 4.5]),
-            "image": random.choice(PRODUCT_IMAGES)
-        })
-    return {"ok": True, "products": fallback_products, "page": page, "has_next": False}
+        fallback.append({"id": str(random.randint(1000,9999)), "name": f"{query} Product {i+1}", "price": p, "mrp": p*2, "rating": random.choice([3.8,4.0,4.2,4.5]), "image": random.choice(PRODUCT_IMAGES)})
+    return {"ok": True, "products": fallback, "page": page, "has_next": False}
 
 class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -140,19 +133,64 @@ class APIHandler(BaseHTTPRequestHandler):
             page = int(params.get('page', ['1'])[0])
             limit = min(int(params.get('limit', ['20'])[0]), 50)
             result = executor.submit(search_products, query, page, limit).result(timeout=15)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
+            self._send_json(result)
+        
+        elif parsed.path == '/api/accounts':
+            user_id = params.get('user_id', [''])[0]
+            accounts = load_user_accounts()
+            user_accounts = accounts.get(user_id, [])
+            self._send_json({"ok": True, "accounts": user_accounts})
+        
         elif parsed.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode())
+            self._send_json({"status": "ok"})
+        
         else:
-            self.send_response(404)
-            self.end_headers()
+            self._send_json({"ok": False}, 404)
+    
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(content_length) or b'{}')
+        parsed = urlparse(self.path)
+        
+        if parsed.path == '/api/login':
+            phone = body.get('phone', '')
+            user_id = body.get('user_id', '')
+            accounts = load_user_accounts()
+            if user_id not in accounts:
+                accounts[user_id] = []
+            exists = False
+            for acc in accounts[user_id]:
+                if acc['phone'] == phone:
+                    exists = True
+                    break
+            if not exists:
+                accounts[user_id].append({
+                    "phone": phone,
+                    "login_time": time.strftime("%Y-%m-%d %H:%M:%S")
+                })
+            save_user_accounts(accounts)
+            self._send_json({"ok": True, "accounts": accounts[user_id]})
+        
+        elif parsed.path == '/api/logout':
+            user_id = body.get('user_id', '')
+            phone = body.get('phone', '')
+            accounts = load_user_accounts()
+            if user_id in accounts:
+                accounts[user_id] = [a for a in accounts[user_id] if a['phone'] != phone]
+                save_user_accounts(accounts)
+            self._send_json({"ok": True, "accounts": accounts.get(user_id, [])})
+        
+        else:
+            self._send_json({"ok": False}, 404)
+    
+    def _send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
     
     def log_message(self, format, *args):
         pass
