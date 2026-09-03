@@ -24,8 +24,18 @@ DEVICES = [
     {"brand": "oneplus", "model": "CPH2583", "os_version": "14"},
 ]
 
+PRODUCT_IMAGES = [
+    "https://picsum.photos/300/400?random=1",
+    "https://picsum.photos/300/400?random=2",
+    "https://picsum.photos/300/400?random=3",
+    "https://picsum.photos/300/400?random=4",
+    "https://picsum.photos/300/400?random=5",
+    "https://picsum.photos/300/400?random=6",
+    "https://picsum.photos/300/400?random=7",
+    "https://picsum.photos/300/400?random=8",
+]
+
 def extract_price(value, fallback=0):
-    """Price ko sahi se extract karo - int, float, str, dict sab handle"""
     if value is None:
         return fallback
     if isinstance(value, (int, float)):
@@ -72,36 +82,41 @@ def search_products(query, page=1, limit=20):
             products = []
             
             for c in catalogs:
-                # Price extract karo - multiple fields try
                 price = extract_price(c.get("price")) or extract_price(c.get("selling_price")) or extract_price(c.get("min_price"))
                 mrp = extract_price(c.get("mrp")) or extract_price(c.get("maximum_retail_price")) or extract_price(c.get("original_price"))
                 
-                # Agar price 0 hai to fallback random
                 if price <= 0:
                     price = random.randint(99, 999)
                 if mrp <= 0 or mrp < price:
-                    mrp = price * random.choice([2, 2.5, 3, 3.5, 4])
+                    mrp = price * random.choice([2, 2.5, 3, 4])
                 
-                # Rating extract
                 rating = c.get("rating")
                 if isinstance(rating, dict):
                     rating = rating.get("average") or rating.get("value") or 0
                 if not rating or rating <= 0:
                     rating = random.choice([3.8, 3.9, 4.0, 4.1, 4.2, 4.3, 4.4, 4.5])
                 
+                image = c.get("image") or c.get("image_url") or c.get("thumbnail")
+                if isinstance(image, list) and image:
+                    image = image[0]
+                if isinstance(image, dict):
+                    image = image.get("url", "")
+                if not image:
+                    image = random.choice(PRODUCT_IMAGES)
+                
                 products.append({
                     "id": str(c.get("id", "")),
                     "name": c.get("name", "Product"),
                     "price": int(price),
                     "mrp": int(mrp),
-                    "rating": round(float(rating), 1)
+                    "rating": round(float(rating), 1),
+                    "image": str(image)
                 })
             
             return {"ok": True, "products": products, "page": page, "has_next": len(products) == limit}
     except Exception as e:
         logger.error(f"Search error: {e}")
     
-    # Fallback agar API fail
     fallback_products = []
     for i in range(limit):
         p = random.randint(99, 999)
@@ -110,7 +125,8 @@ def search_products(query, page=1, limit=20):
             "name": f"{query} Product {i+1}",
             "price": p,
             "mrp": p * 2,
-            "rating": random.choice([3.8, 4.0, 4.2, 4.5])
+            "rating": random.choice([3.8, 4.0, 4.2, 4.5]),
+            "image": random.choice(PRODUCT_IMAGES)
         })
     return {"ok": True, "products": fallback_products, "page": page, "has_next": False}
 
@@ -124,21 +140,16 @@ class APIHandler(BaseHTTPRequestHandler):
             page = int(params.get('page', ['1'])[0])
             limit = min(int(params.get('limit', ['20'])[0]), 50)
             result = executor.submit(search_products, query, page, limit).result(timeout=15)
-            
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', '*')
             self.end_headers()
             self.wfile.write(json.dumps(result).encode())
-        
         elif parsed.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode())
-        
         else:
             self.send_response(404)
             self.end_headers()
